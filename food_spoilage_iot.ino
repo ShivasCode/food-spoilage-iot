@@ -9,11 +9,9 @@
 #include <SD.h>
 #include <MQUnifiedsensor.h>
 
-// Pin definitions
-// const int DO_Pin = 34;
-// const int AO_Pin = 25;
 
-const int chipSelect = 5;  // Pin for SD card
+
+const int chipSelect = 5;  
 
 #define         Board                   ("ESP-32")
 #define         MQ4_Pin                 33 // MQ-4 sensor pin
@@ -25,8 +23,6 @@ const int chipSelect = 5;  // Pin for SD card
 #define         DHTPIN                  32  // DHT22 sensor data pin
 #define         DHTTYPE                 DHT22 // Define DHT22 sensor type
 #define LED_PIN 12             // LED pin to control
-
-// #define BUTTON_PIN 14          // Define the GPIO pin connected to the push button
 
 MQUnifiedsensor MQ4(Board, Voltage_Resolution, ADC_Bit_Resolution, MQ4_Pin, Type);
 
