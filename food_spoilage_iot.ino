@@ -9,7 +9,7 @@
 #include <SD.h>
 #include <MQUnifiedsensor.h>
 
-
+  
 
 const int chipSelect = 5;  
 
@@ -236,31 +236,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
             bool startMonitoringFlag = doc["start_monitoring"];
             
             if (!startMonitoringFlag) {
-              startMonitoring = false; // Stop monitoring
-              // Reset spoilage detection timers and flags
-              spoilageTimerRunning = false;
-              thresholdStartMillis = 0;
+                resetMonitoringState();
 
-              tempStartMillis = 0;
-              tempTimerRunning = false;
-
-              humidityStartMillis = 0;
-              humidityTimerRunning = false;
-
-              ammoniaThresholdStartMillis = 0;
-              ammoniaTimerRunning = false;
-
-              storageStartMillis = 0;
-              storageTimerRunning = false;
-
-              // Reset warning timers and flags
-              tempWarningStartMillis = 0;
-              tempWarningTimerRunning = false;
-              tempWarningTriggered = false;
-
-              humidityWarningStartMillis = 0;
-              humidityWarningTimerRunning = false;
-              humidityWarningTriggered = false;
             } 
         }
     } else {
@@ -283,22 +260,22 @@ void sendHeartbeat() {
 
 
 void loop() {
-   if (Serial.available() > 0) {
-        char command = Serial.read(); // Read input from Serial monitor
-        
-        // Check for connection command
-        if (command == 'A') {
-            connectWiFi();
-        } 
-        // Check for disconnection command
-        else if (command == 'B') {
-            disconnectWiFi();
-        }
-    }
+    if (Serial.available() > 0) {
+          char command = Serial.read(); // Read input from Serial monitor
+          
+          // Check for connection command 
+          if (command == 'A') {
+              connectWiFi();
+          } 
+          // Check for disconnection command
+          else if (command == 'B') {
+              disconnectWiFi();
+          }
+      }
 
-    if (!client.connected()) {
-        reconnect();
-       }
+      if (!client.connected()) {
+          reconnect();
+        }
         // Store sensor data locally while disconnected
         client.loop();  // Handle MQTT communication if connected
         if (millis() - lastHeartbeat >= heartbeatInterval) {
@@ -339,6 +316,8 @@ void loop() {
                     // String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\", \"reason\": \"storage\"}";
                     spoilageStatus = "Food is Spoiled due to Storage Time";
                     startMonitoring = false;
+                    storageStartMillis = 0;
+                    storageTimerRunning = false; 
                     // client.publish("sensor/notifications", spoilagePayload.c_str());
                 } else {
                     unsigned long elapsedStorageTime = millis() - storageStartMillis;
@@ -455,6 +434,8 @@ void loop() {
           }
           // Condition 2: If the food is spoiled, turn the LED off
           else if (spoilageStatus == "Food is Spoiled") {
+            resetMonitoringState();
+
             digitalWrite(LED_PIN, LOW);  // Turn off the LED
           }
 
@@ -471,7 +452,6 @@ void loop() {
             String topic = "sensor/data/" + String(token);
             client.publish(topic.c_str(), jsonPayload.c_str());
 
-            Serial.println("Data sent to topic: " + topic);
             Serial.println("Data sent: " + jsonPayload);
 
 
@@ -481,6 +461,8 @@ void loop() {
 }
 
 void storeDataLocally() {
+  Serial.print("start monitoring: ");
+  Serial.println(startMonitoring);
   if(startMonitoring){
     Serial.println("Storing monitoring data locally");
     MQ4.update();
@@ -631,6 +613,8 @@ void storeDataLocally() {
           }
           // Condition 2: If the food is spoiled, turn the LED off
           else if (spoilageStatus == "Food is Spoiled") {
+            resetMonitoringState();
+
             digitalWrite(LED_PIN, LOW);  // Turn off the LED
           }
 
@@ -675,9 +659,15 @@ void sendDataFromSDCard() {
             // Publish the line to the MQTT topic
             client.publish(topic.c_str(), line.c_str());
             Serial.println("Sent data: " + line);  // Debug print
+            delay(100);  // Add a delay of 100ms between messages
+
         }
         dataFile.close();  // Close the file after reading
-        SD.remove("/data.txt");  // Optional: Remove the file after sending its contents
+        if (SD.remove("/data.txt")) {
+            Serial.println("File deleted successfully");  // Debug: Confirm file deletion
+        } else {
+            Serial.println("Failed to delete the file");  // Debug: Handle deletion failure
+        }
     } else {
         Serial.println("Error opening file for reading");
     }
@@ -685,28 +675,52 @@ void sendDataFromSDCard() {
 
 
 void reconnect() {
+    // Check if WiFi is disconnected
+    if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi is not connected. Storing data locally.");
+
+    unsigned long currentMillis = millis();
+    Serial.print("Current millis: ");
+    Serial.println(currentMillis);
+    Serial.print("Last store time: ");
+    Serial.println(lastStoreTime);
+    Serial.print("Store interval: ");
+    Serial.println(storeInterval);
+
+    // Check if enough time has passed since last store
+    if (currentMillis - lastStoreTime >= storeInterval) {
+        lastStoreTime = currentMillis;  // Update the last store time
+        Serial.println("Calling storeDataLocally...");
+        storeDataLocally();  // Attempt to store data
+    } else {
+        Serial.println("storeDataLocally not called. Interval not met.");
+    }
+    return; // Exit the function since WiFi needs to reconnect first
+}
+
+    // Attempt to reconnect to MQTT if WiFi is connected
     while (!client.connected()) {
         Serial.print("Connecting to MQTT...");
-        // storeDataLocally();  // Store data locally during disconnection
+
+        // Store data locally during MQTT reconnect attempts
         if (millis() - lastStoreTime >= storeInterval) {
-            lastStoreTime = millis();  // Update the last store time
-            storeDataLocally();        // Store data locally
+            lastStoreTime = millis();
+            storeDataLocally();
         }
-  
+
         if (client.connect("ESP32Client", mqtt_user, mqtt_pass)) {
-            Serial.println("connected");  
-            client.subscribe(("sensor/monitoring/" + String(token)).c_str());  // Subscribe to the food selection topic
-             
+            Serial.println("Connected to MQTT.");
+            client.subscribe(("sensor/monitoring/" + String(token)).c_str());  // Subscribe to the topic
+            
             // Send stored data from the SD card
             sendDataFromSDCard();
         } else {
-            Serial.print("failed, rc=");
-            Serial.print(client.state());
-            delay(10000);  // Wait for 10 seconds before retrying
+            Serial.print("Failed to connect to MQTT, rc=");
+            Serial.println(client.state());
+            delay(5000); // Wait before retrying
         }
     }
 }
-
 void connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Already connected to WiFi.");
@@ -742,5 +756,34 @@ void disconnectWiFi() {
     WiFi.disconnect();
     wifiConnected = false;
     Serial.println("WiFi disconnected.");
+}
+
+void resetMonitoringState() {
+  startMonitoring = false; // Stop monitoring
+
+  // Reset spoilage detection timers and flags
+  spoilageTimerRunning = false;
+  thresholdStartMillis = 0;
+
+  tempStartMillis = 0;
+  tempTimerRunning = false;
+
+  humidityStartMillis = 0;
+  humidityTimerRunning = false;
+
+  ammoniaThresholdStartMillis = 0;
+  ammoniaTimerRunning = false;
+
+  storageStartMillis = 0;
+  storageTimerRunning = false;
+
+  // Reset warning timers and flags
+  tempWarningStartMillis = 0;
+  tempWarningTimerRunning = false;
+  tempWarningTriggered = false;
+
+  humidityWarningStartMillis = 0;
+  humidityWarningTimerRunning = false;
+  humidityWarningTriggered = false;
 }
 
