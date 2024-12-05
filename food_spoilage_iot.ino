@@ -1,31 +1,15 @@
 #include <WiFi.h>
-
-
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <RTClib.h>
 #include "DHT.h"
 #include <ArduinoJson.h>
 #include <SD.h>
-#include <MQUnifiedsensor.h>
-
-  
 
 const int chipSelect = 5;  
-
-#define         Board                   ("ESP-32")
-#define         MQ4_Pin                 33 // MQ-4 sensor pin
-#define         MQ137_Pin               35 // MQ-137 sensor pin
-#define         Type                    ("MQ-4")
-#define         Voltage_Resolution      (5)  // MQ sensors are generally 5V, though ESP32 uses 3.3V
-#define         ADC_Bit_Resolution      (12)
-#define         RatioMQ4CleanAir        (4.4)
 #define         DHTPIN                  32  // DHT22 sensor data pin
 #define         DHTTYPE                 DHT22 // Define DHT22 sensor type
-#define LED_PIN 12             // LED pin to control
-
-MQUnifiedsensor MQ4(Board, Voltage_Resolution, ADC_Bit_Resolution, MQ4_Pin, Type);
-
+#define         LED_PIN                 12    // LED pin to control
 
 File dataFile;
 
@@ -52,14 +36,17 @@ String selectedFood = "";  // Store the selected food type
 bool startMonitoring = false;  // Control flag to check if monitoring should start
 
 // Food spoilage thresholds
-const float TEMP_THRESHOLD = 25.0;       // Temperature threshold
-const float HUMIDITY_THRESHOLD = 50.0;   // Humidity threshold
-const float METHANE_THRESHOLD = 1.0;       // Methane threshold
-const float AMMONIA_THRESHOLD = 5.0;       //Ammonia threshold
+const float TEMP_THRESHOLD = 32.0;       // Temperature threshold
+const float METHANE_THRESHOLD = 120.0;       // Methane threshold
+const float AMMONIA_THRESHOLD = 100.0;
 
 // Variables for spoilage detection
 bool spoilageTimerRunning = false; // Timer running flag
+bool ammoniaSpoilageTimerRunning = false; 
+
 unsigned long thresholdStartMillis = 0;  
+unsigned long ammoniaThresholdStartMillis = 0;  
+
 
 unsigned long tempStartMillis = 0;
 bool tempTimerRunning = false;
@@ -73,30 +60,27 @@ bool tempWarningTimerRunning = false;
 unsigned long humidityWarningStartMillis = 0;
 bool humidityWarningTimerRunning = false;
 
-unsigned long ammoniaThresholdStartMillis = 0;
-bool ammoniaTimerRunning = false;
-
 unsigned long storageStartMillis = 0;
 bool storageTimerRunning = false; 
 
 //1000 = 1 second
-const unsigned long SPOILAGE_DELAY = 20000;  // Time in milliseconds to confirm spoilage
-const unsigned long TEMP_SPOILAGE_DELAY = 100000; 
-const unsigned long HUMIDITY_SPOILAGE_DELAY = 10000; 
-const unsigned long AMMONIA_SPOILAGE_DELAY = 5000; 
-const unsigned long STORAGE_SPOILAGE_DELAY = 24L * 60 * 60 * 1000; 
+const unsigned long SPOILAGE_DELAY = 5L * 60 * 1000;  // 5 minutes
+const unsigned long AMMONIA_SPOILAGE_DELAY = 5L * 60 * 1000;  // 5 minutes
 
+// const unsigned long TEMP_RISK_DELAY = 2L * 60 * 60 * 1000;  // 2 hours in milliseconds
+const unsigned long TEMP_RISK_DELAY = 1L * 60 * 1000;  // 3 minutes
 
-const unsigned long TEMP_WARNING_DELAY = 5000; 
-const unsigned long HUMIDITY_WARNING_DELAY = 5000; 
-
+// const unsigned long STORAGE_RISK_DELAY = 3L * 24 * 60 * 60 * 1000;  // 3 days in milliseconds
+const unsigned long STORAGE_RISK_DELAY = 1L * 60 * 1000;  // 3 minutes in milliseconds
 
 
 unsigned long lastReconnectAttempt = 0;  // Timestamp for the last reconnect attempt
 const unsigned long RECONNECT_INTERVAL = 30000;  // 30 seconds delay between reconnect attempts
 
 
+// const unsigned long storeInterval = 5L * 60 * 1000; // 1 minute in milliseconds
 const unsigned long storeInterval = 5000; // 1 minute in milliseconds
+
 unsigned long lastStoreTime = 0; // Initialize to 0 at the start
 
 unsigned long lastHeartbeat = 0;
@@ -105,51 +89,23 @@ const unsigned long heartbeatInterval = 10000;  // 10 seconds
 bool tempWarningTriggered = false;
 bool humidityWarningTriggered = false;
 
-const float VCC = 5.0;
-const float RL = 10.0;
-
-const float R0 = 20.0;
-const float A = 116.602;
-const float B = -2.769;
 
 bool wifiConnected = false;
+
+unsigned long lastMonitoringMillis = 0;
+// const unsigned long MONITORING_INTERVAL = 1000; // 5 minutes
+const unsigned long MONITORING_INTERVAL = 5000; // 5 minutes
+
 
 
 void setup() {
     Serial.begin(115200);
+    // dht setup
     dht.begin();
+    // wire setup
     Wire.begin();
-    MQ4.setRegressionMethod(1); //_PPM =  a*ratio^b
-    MQ4.setA(1012.7); MQ4.setB(-2.786); // Set calibration values for MQ-4
-    MQ4.init(); 
 
-  // Serial.print("Calibrating please wait.");
-
-  // float calcR0 = 0;
-  // for(int i = 1; i <= 10; i++) {
-  //   MQ4.update();
-  //   calcR0 += MQ4.calibrate(RatioMQ4CleanAir);
-    
-  //   Serial.print("calcR0: ");
-  //   Serial.print(calcR0);
-  //   Serial.print(", RatioMQ4CleanAir: ");
-  //   Serial.println(RatioMQ4CleanAir);
-
-  // }
-  float preCalibratedR0 = 10.0;  
-  MQ4.setR0(preCalibratedR0);
-    Serial.print("R0 Value: ");
-    Serial.println(preCalibratedR0);
-  // Serial.println("  done!");
-
-  // if (isinf(calcR0)) { 
-  //   Serial.println("Warning: Connection issue, R0 is infinite. Check wiring.");
-  //   while (1);
-  // }
-  // if (calcR0 == 0) {
-  //   Serial.println("Warning: Connection issue, R0 is zero. Check wiring.");
-  //   while (1);
-  // }
+    // wifi setup
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
     while (WiFi.status() != WL_CONNECTED) {
@@ -157,15 +113,23 @@ void setup() {
         Serial.print(".");
     }
     Serial.println("\nConnected to WiFi");
-
+    // mqtt server connection
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(callback);
-    client.setBufferSize(512);
+    client.setBufferSize(2048);
+
+    // rtc connection
     if (!rtc.begin()) {
         Serial.println("Couldn't find RTC");
         while (1);
     }
 
+    if (!rtc.isrunning()) {
+        Serial.println("RTC is NOT running, setting time...");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+
+    // microSD card initialization
     if (!SD.begin(chipSelect)) {
       Serial.println("SD Card initialization failed. Check the SD card or wiring.");
     }
@@ -184,11 +148,6 @@ void setup() {
       }
     } else {
       Serial.println("data.txt already exists. Skipping creation.");
-    }
-
-    if (!rtc.isrunning()) {
-        Serial.println("RTC is NOT running, setting time...");
-        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
 
     // Turn on led to indicate food safe
@@ -283,42 +242,37 @@ void loop() {
             sendHeartbeat();  // Send heartbeat
           }
         if (startMonitoring) {
-            MQ4.update();
+            Serial.println("Monitoring started...");
+            if (lastMonitoringMillis == 0 || millis() - lastMonitoringMillis >= MONITORING_INTERVAL) {
+            lastMonitoringMillis = millis(); // Update the last execution time
             float humidity = dht.readHumidity();
             float temperature = dht.readTemperature();
-            float methane = MQ4.readSensor();
-            int analogValue = analogRead(MQ137_Pin); 
+            double methane = analogRead(33); // Store analog read as a float
+            double ammonia = analogRead(35);
             DateTime now = rtc.now();
-            float voltage = analogValue * (VCC / 4095.0); // Convert to voltage
-            float RS = RL * (VCC - voltage) / voltage;
-            float ratio = RS / R0;
-            float ammonia = A * pow(ratio, B);
+            String spoilageStatus = "Food is Fresh";
+            String spoilageStatusWarningTemp = "Temperature is safe";
+            String MethaneStatusMessage = "Methane level is within safe limits.";
+            String TemperatureStatusMessage = "Temperature is within the safe range.";
+            String StorageStatusMessage = "Food storage time is within the recommended duration.";
+            String AmmoniaStatusMessage = "Ammonia level is within safe limits.";
+            // Print the sensor value to the Serial Monitor
+            Serial.print("Analog Reading: ");
+            Serial.println(methane);
             if (isnan(humidity) || isnan(temperature)) {
                 Serial.println("Failed to read from DHT sensor!");
                 return;
             }
-
-            String spoilageStatus = "Food is Fresh";
-            String spoilageStatusWarningTemp = "Temperature is safe";
-            String spoilageStatusWarningHumidity = "Humidity is safe";
-            String spoilageStatusMethane = "Methane is safe";
-            String spoilageStatusAmmonia = "Ammonia is safe";
-
-
             if (!storageTimerRunning) {
                 storageStartMillis = millis();
                 storageTimerRunning = true;
                 Serial.println("Storage timer started.");
             } else {
                 // Check if the storage time has exceeded the spoilage delay
-                if (millis() - storageStartMillis >= STORAGE_SPOILAGE_DELAY) {
-                    Serial.println("Food is spoiled due to prolonged storage!");
-                    // String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\", \"reason\": \"storage\"}";
-                    spoilageStatus = "Food is Spoiled due to Storage Time";
-                    startMonitoring = false;
-                    storageStartMillis = 0;
-                    storageTimerRunning = false; 
-                    // client.publish("sensor/notifications", spoilagePayload.c_str());
+                if (millis() - storageStartMillis >= STORAGE_RISK_DELAY) {
+                    Serial.println("Notify user that food stored over 3 days");
+                    spoilageStatus = "Food is at Risk";
+                    StorageStatusMessage = "Food is at risk due to being stored for over 3 days."; 
                 } else {
                     unsigned long elapsedStorageTime = millis() - storageStartMillis;
                     Serial.print("Storage time elapsed: ");
@@ -327,9 +281,9 @@ void loop() {
                 }
             }
 
-
             if (methane > METHANE_THRESHOLD) {
               spoilageStatus = "Food is at Risk";
+              MethaneStatusMessage = "Methane threshold exceeded. Food at risk.";
               if (!spoilageTimerRunning) {
                 // Start the timer when the threshold is reached
                 thresholdStartMillis = millis();
@@ -339,10 +293,9 @@ void loop() {
                 // Check how long the readings have stayed in the threshold range
                 if (millis() - thresholdStartMillis >= SPOILAGE_DELAY) {
                     Serial.println("Food is spoiled!");
-                    String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\"}";
                     startMonitoring = false;
                     spoilageStatus = "Food is Spoiled";
-                    spoilageStatusMethane = "Food is Spoiled Due To High Methane";
+                    MethaneStatusMessage = "Food is Spoiled Due To High Methane";
                 } else {
                 // Track and display the time the methane has been above the threshold
                 unsigned long elapsedMethaneTime = millis() - thresholdStartMillis;
@@ -357,33 +310,43 @@ void loop() {
             thresholdStartMillis = 0;
 
         }
+
         if (ammonia > AMMONIA_THRESHOLD) {
-          spoilageStatusAmmonia = "Food is at Risk Due to High Ammonia";
-          if (!ammoniaTimerRunning) {
-              ammoniaThresholdStartMillis = millis();
-              ammoniaTimerRunning = true;
-              Serial.println("Ammonia above threshold, starting spoilage timer.");
-          } else if (millis() - ammoniaThresholdStartMillis >= AMMONIA_SPOILAGE_DELAY) {
-              Serial.println("Food is spoiled due to ammonia!");
-              String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\"}";
-              startMonitoring = false;
-              spoilageStatus = "Food is Spoiled";
-              spoilageStatusAmmonia = "Food is Spoiled Due To High Ammonia";
-          } else {
-        // Track and display the time the ammonia has been above the threshold
-        unsigned long elapsedAmmoniaTime = millis() - ammoniaThresholdStartMillis;
-        Serial.print("Ammonia time above threshold: ");
-        Serial.print(elapsedAmmoniaTime / 1000); // Convert to seconds for readability
-        Serial.println(" seconds.");
-    }
+            spoilageStatus = "Food is at Risk";
+            AmmoniaStatusMessage = "Ammonia threshold exceeded. Food at risk.";
+            if (!spoilageTimerRunning) {     
+                // Start the timer when the threshold is reached
+                ammoniaThresholdStartMillis = millis();
+                ammoniaSpoilageTimerRunning = true;
+                Serial.println("Ammonia above threshold, starting spoilage timer.");
+            } else {
+                // Check how long the readings have stayed in the threshold range
+                if (millis() - ammoniaThresholdStartMillis >= AMMONIA_SPOILAGE_DELAY) {
+                    Serial.println("Food is spoiled due to ammonia!");
+                    startMonitoring = false;
+                    spoilageStatus = "Food is Spoiled";
+                    AmmoniaStatusMessage = "Food is Spoiled Due To High Ammonia";
+                } else {
+                    // Track and display the time the ammonia has been above the threshold
+                    unsigned long elapsedAmmoniaTime = millis() - ammoniaThresholdStartMillis;
+                    Serial.print("Ammonia time above threshold: ");
+                    Serial.print(elapsedAmmoniaTime / 1000); // Convert to seconds for readability
+                    Serial.println(" seconds.");
+                }
+            }
         } else {
-            ammoniaTimerRunning = false;
+            // Reset spoilage detection
+            ammoniaSpoilageTimerRunning = false;
             ammoniaThresholdStartMillis = 0;
         }
+
+
         // ----- High Temperature Spoilage Timer Logic -----
         // ----- Temperature Warning and Spoilage Detection -----
         if (temperature > TEMP_THRESHOLD) {
             spoilageStatusWarningTemp = "Food at Risk Due to High Temperature";
+            TemperatureStatusMessage = "Food at Risk Due to High Temperature"; //notify user
+
             Serial.println("Temperature exceeds threshold.");
 
             // Send warning notification once
@@ -396,18 +359,14 @@ void loop() {
             if (!tempTimerRunning) {
                 tempStartMillis = millis();
                 tempTimerRunning = true;
-                Serial.println("Starting temperature spoilage timer.");
+                Serial.println("Starting temperature food risk timer.");
             }
 
             // Check if spoilage delay has passed
-            if (millis() - tempStartMillis >= TEMP_SPOILAGE_DELAY) {
-                Serial.println("Food is spoiled due to high temperature!");
-                spoilageStatus = "Food is Spoiled";
-
-                // Stop monitoring
-                startMonitoring = false;
-                tempTimerRunning = false;
-                tempStartMillis = 0;
+            if (millis() - tempStartMillis >= TEMP_RISK_DELAY) {
+                Serial.println("Food is at risk due to high temperature!");
+                spoilageStatus = "Food is at Risk";
+                TemperatureStatusMessage = "Food has been exposed to high temperature for over 2 hours. Spoilage risk detected."; //notify user
             } else {
               // Track and display the time the temperature has been above the threshold
               unsigned long elapsedTempTime = millis() - tempStartMillis;
@@ -422,7 +381,7 @@ void loop() {
                 tempWarningTriggered = false;
                 tempTimerRunning = false;
                 tempStartMillis = 0;
-                Serial.println("Temperature is safe. Timers reset.");
+                Serial.println("Temperature dropped. Temperature timers reset.");
             }
         }
 
@@ -447,17 +406,30 @@ void loop() {
                      ", \"food_type\": \"" + selectedFood + "\"" +
                      ", \"spoilage_status\": \"" + spoilageStatus + "\"" +
                      ", \"spoilage_status_warning_temp\": \"" + spoilageStatusWarningTemp + "\"" +
-                     ", \"spoilage_status_warning_humidity\": \"" + spoilageStatusWarningHumidity + "\"}";      
+                     ", \"methane_status_message\": \"" + MethaneStatusMessage + "\"" +
+                     ", \"ammonia_status_message\": \"" + AmmoniaStatusMessage + "\"" +
+                     ", \"temperature_status_message\": \"" + TemperatureStatusMessage + "\"" +
+                     ", \"storage_status_message\": \"" + StorageStatusMessage + "\"}";
 
             String topic = "sensor/data/" + String(token);
             client.publish(topic.c_str(), jsonPayload.c_str());
 
             Serial.println("Data sent: " + jsonPayload);
 
+            }   else {
+        // Print remaining time for debug purposes
+        unsigned long remainingTime = MONITORING_INTERVAL - (millis() - lastMonitoringMillis);
+        Serial.print("Next monitoring in: ");
+        Serial.print(remainingTime / 1000);  // Convert to seconds for readability
+        Serial.println(" seconds.");
+               }
+        } else {
+              // Reset the timer when monitoring is stopped
+              Serial.println("Monitoring is disabled.");
+              lastMonitoringMillis = 0;
+          }
 
-        }
-
-    delay(10000);  // 10-second delay before next loop
+          delay(5000);
 }
 
 void storeDataLocally() {
@@ -465,38 +437,29 @@ void storeDataLocally() {
   Serial.println(startMonitoring);
   if(startMonitoring){
     Serial.println("Storing monitoring data locally");
-    MQ4.update();
     float humidity = dht.readHumidity();
     float temperature = dht.readTemperature();
-    float methane = MQ4.readSensor();
-    int analogValue = analogRead(MQ137_Pin); 
+    double methane = analogRead(33); // Store analog read as a float
     DateTime now = rtc.now();
-    float voltage = analogValue * (VCC / 4095.0); // Convert to voltage
-    float RS = RL * (VCC - voltage) / voltage;
-    float ratio = RS / R0;
-    float ammonia = A * pow(ratio, B);
-
+    String spoilageStatus = "Food is Fresh";
+    String spoilageStatusWarningTemp = "Temperature is safe";
+    String MethaneStatusMessage = "Methane level is within safe limits.";
+    String TemperatureStatusMessage = "Temperature is within the safe range.";
+    String StorageStatusMessage = "Food storage time is within the recommended duration.";
+    String AmmoniaStatusMessage = "Ammonia level is within safe limits.";
     if (isnan(humidity) || isnan(temperature)) {
         Serial.println("Failed to read from DHT sensor!");
         return;
-    }
-
-            String spoilageStatus = "Food is Fresh";
-            String spoilageStatusWarningTemp = "Temperature is safe";
-            String spoilageStatusWarningHumidity = "Humidity is safe";
-            String spoilageStatusMethane = "Methane is safe";
-            String spoilageStatusAmmonia = "Ammonia is safe";
-
+          }
             if (!storageTimerRunning) {
                 storageStartMillis = millis();
                 storageTimerRunning = true;
                 Serial.println("Storage timer started.");
             } else {
                 // Check if the storage time has exceeded the spoilage delay
-                if (millis() - storageStartMillis >= STORAGE_SPOILAGE_DELAY) {
-                    Serial.println("Food is spoiled due to prolonged storage!");
+                if (millis() - storageStartMillis >= STORAGE_RISK_DELAY) {
+                    Serial.println("Food is at risk due to prolonged storage!");
                     // String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\", \"reason\": \"storage\"}";
-                    spoilageStatus = "Food is Spoiled due to Storage Time";
                     startMonitoring = false;
                     // client.publish("sensor/notifications", spoilagePayload.c_str());
                 } else {
@@ -523,7 +486,7 @@ void storeDataLocally() {
                     String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\"}";
                     startMonitoring = false;
                     spoilageStatus = "Food is Spoiled";
-                    spoilageStatusMethane = "Food is Spoiled Due To High Methane";
+                    MethaneStatusMessage = "Methane threshold exceeded. Food at risk.";
                 } else {
                 // Track and display the time the methane has been above the threshold
                 unsigned long elapsedMethaneTime = millis() - thresholdStartMillis;
@@ -538,30 +501,6 @@ void storeDataLocally() {
             thresholdStartMillis = 0;
 
         }
-        if (ammonia > AMMONIA_THRESHOLD) {
-          spoilageStatusAmmonia = "Food is at Risk Due to High Ammonia";
-          if (!ammoniaTimerRunning) {
-              ammoniaThresholdStartMillis = millis();
-              ammoniaTimerRunning = true;
-              Serial.println("Ammonia above threshold, starting spoilage timer.");
-          } else if (millis() - ammoniaThresholdStartMillis >= AMMONIA_SPOILAGE_DELAY) {
-              Serial.println("Food is spoiled due to ammonia!");
-              String spoilagePayload = "{\"food_type\": \"" + selectedFood + "\", \"status\": \"spoiled\"}";
-              startMonitoring = false;
-              spoilageStatus = "Food is Spoiled";
-              spoilageStatusAmmonia = "Food is Spoiled Due To High Ammonia";
-          } else {
-        // Track and display the time the ammonia has been above the threshold
-        unsigned long elapsedAmmoniaTime = millis() - ammoniaThresholdStartMillis;
-        Serial.print("Ammonia time above threshold: ");
-        Serial.print(elapsedAmmoniaTime / 1000); // Convert to seconds for readability
-        Serial.println(" seconds.");
-    }
-        } else {
-            ammoniaTimerRunning = false;
-            ammoniaThresholdStartMillis = 0;
-        }
-
         // ----- High Temperature Spoilage Timer Logic -----
         // ----- Temperature Warning and Spoilage Detection -----
         if (temperature > TEMP_THRESHOLD) {
@@ -582,14 +521,10 @@ void storeDataLocally() {
             }
 
             // Check if spoilage delay has passed
-            if (millis() - tempStartMillis >= TEMP_SPOILAGE_DELAY) {
+            if (millis() - tempStartMillis >= TEMP_RISK_DELAY) {
                 Serial.println("Food is spoiled due to high temperature!");
-                spoilageStatus = "Food is Spoiled";
-
-                // Stop monitoring
-                startMonitoring = false;
-                tempTimerRunning = false;
-                tempStartMillis = 0;
+                spoilageStatus = "Food is at Risk";
+          
             } else {
               // Track and display the time the temperature has been above the threshold
               unsigned long elapsedTempTime = millis() - tempStartMillis;
@@ -611,25 +546,26 @@ void storeDataLocally() {
         if (spoilageStatus == "Food is Fresh" || spoilageStatus == "Food is at Risk") {
             digitalWrite(LED_PIN, HIGH);  // Turn on the LED
           }
-          // Condition 2: If the food is spoiled, turn the LED off
+          // Condition 2: If the food is spoiled, turn the LED off  
           else if (spoilageStatus == "Food is Spoiled") {
             resetMonitoringState();
 
             digitalWrite(LED_PIN, LOW);  // Turn off the LED
           }
 
-          String jsonPayload = "{\"token\": \"" + String(token) + "\"" +
-                     ", \"temperature\": " + String(temperature) +
-                     ", \"humidity\": " + String(humidity) +
-                     ", \"methane\": " + String(methane) +
-                     ", \"ammonia\": " + String(ammonia) +
-                     ", \"food_type\": \"" + selectedFood + "\"" +
-                     ", \"spoilage_status\": \"" + spoilageStatus + "\"" +
-                     ", \"spoilage_status_warning_temp\": \"" + spoilageStatusWarningTemp + "\"" +
-                     ", \"spoilage_status_warning_humidity\": \"" + spoilageStatusWarningHumidity + "\"}";      
-
-
-
+          String jsonPayload = "{"
+                     "\"temperature\": " + String(temperature) + ", "
+                     "\"humidity\": " + String(humidity) + ", "
+                     "\"methane\": " + String(methane) + ", "
+                     "\"food_type\": \"" + selectedFood + "\", "
+                     "\"spoilage_status\": \"" + spoilageStatus + "\", "
+                     "\"spoilage_status_warning_temp\": \"" + spoilageStatusWarningTemp + "\", "
+                     "\"methane_status_message\": \"" + MethaneStatusMessage + "\", "
+                     "\"temperature_status_message\": \"" + TemperatureStatusMessage + "\", "
+                      "\"ammonia_status_message\": \"" + AmmoniaStatusMessage + "\", "
+                     "\"storage_status_message\": \"" + StorageStatusMessage + "\""
+                     "}";
+  
 
     // Save data to SD card since MQTT is not connected
     saveDataToSD(jsonPayload);
@@ -765,14 +701,13 @@ void resetMonitoringState() {
   spoilageTimerRunning = false;
   thresholdStartMillis = 0;
 
+  ammoniaSpoilageTimerRunning = false;
+  ammoniaThresholdStartMillis = 0;
+
+
   tempStartMillis = 0;
   tempTimerRunning = false;
 
-  humidityStartMillis = 0;
-  humidityTimerRunning = false;
-
-  ammoniaThresholdStartMillis = 0;
-  ammoniaTimerRunning = false;
 
   storageStartMillis = 0;
   storageTimerRunning = false;
@@ -781,9 +716,7 @@ void resetMonitoringState() {
   tempWarningStartMillis = 0;
   tempWarningTimerRunning = false;
   tempWarningTriggered = false;
-
-  humidityWarningStartMillis = 0;
-  humidityWarningTimerRunning = false;
-  humidityWarningTriggered = false;
 }
+
+
 
